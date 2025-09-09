@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAP Calculator</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f4f9; text-align: center; padding: 40px; }
+    h1 { color: #333; }
+    .slider-container, .selector-container { margin: 20px auto; width: 80%; }
+    input[type=range], select { width: 100%; padding: 8px; font-size: 1em; margin-top: 10px; }
+    .output-box { background: #fff; border-radius: 12px; padding: 20px; margin-top: 30px; box-shadow: 0px 4px 10px rgba(0,0,0,0.1); font-size: 1.05em; }
+    .red { color: #c21717; font-weight: 700; }
+    .purple { color: purple; font-weight: 700; }
+    .hint { font-size: 0.9em; color: #555; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-top: 12px; }
+    .cell { background: #fafafa; border: 1px solid #e6e6e6; border-radius: 8px; padding: 10px; }
+    .cell h4 { margin: 0 0 6px; font-size: 0.95em; color: #333; }
+    .cell .time { font-weight: 700; font-variant-numeric: tabular-nums; }
+    .btn {
+      background-color: #4a90e2;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 16px;
+      margin: 6px;
+      font-size: 1em;
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+    }
+    .btn:hover { background-color: #357ab8; }
+    .btn:active { background-color: #2a5f8f; }
+  </style>
+</head>
+<body>
+  <h1>RAP Calculator</h1>
+
+  <div class="selector-container">
+    <label for="reserveStart">Select Reserve Start Period:</label>
+    <select id="reserveStart" onchange="updateTime()"></select>
+  </div>
+
+  <div class="slider-container">
+    <label for="currentTime">Elapsed Time on Reserve (0 - 18 hours):</label>
+    <input type="range" id="currentTime" min="0" max="18" value="0" step="0.25" oninput="updateTime()">
+    <p>Simulated Time: <span id="selectedTime">05:00 AM</span><br>
+       Elapsed: <span id="elapsedHM">0:00</span></p>
+    <button class="btn" onclick="resetSlider()">🔄 Reset Slider</button>
+    <button class="btn" onclick="jumpToNow()">⏱ Jump to Current Time</button>
+  </div>
+
+  <div class="output-box">
+    <p><strong>Time Remaining on Reserve: <span id="timeRemaining">14:00 left</span></strong></p>
+    <p><strong>Reserve End Time:</strong> <span id="endTime">07:00 PM</span></p>
+    <p><strong>Parked By:</strong> <span id="parkedBy">06:30 PM</span></p>
+    <p><strong>Departure Time (Callout +3h):</strong> <span id="departureTime">08:00 AM</span></p>
+    <p><strong>Remaining Duty at Departure:</strong> <span id="remainingAtDep">11:00 left</span></p>
+    <p class="purple"><strong>Remaining Duty from Current Clock Time:</strong> <span id="remainingNow">14:00 left</span></p>
+    <p class="hint">End reflects 14h standard window; <span class="red">+ indicates extension on last day</span>. Includes 30 min debrief.</p>
+  </div>
+
+  <div class="output-box">
+    <p><strong>Last-Day Early Release (if unassigned):</strong> Released <em>6 hours</em> before the standard end of the selected period.</p>
+    <p><strong>Selected Period Early Release:</strong> <span id="selectedEarly">11:00 AM</span></p>
+    <div class="grid" id="earlyReleaseGrid" style="display:none"></div>
+    <p style="display:none" class="hint">Each R-bucket (R0–R17) shows its early release time on the last day if you are not assigned duty. Calculation: <code>start + 14h − 6h = start + 8h</code>.</p>
+  </div>
+
+  <script>
+    const normalReserve = 14;
+    const maxReserve = 18;
+    const debrief = 0.5;
+    const callout = 3;
+    let startHour = 5;
+
+    const select = document.getElementById('reserveStart');
+    for (let i = 0; i <= 17; i++) {
+      const option = document.createElement('option');
+      option.value = i;
+      option.text = `R${i}`;
+      if (i === 5) option.selected = true;
+      select.appendChild(option);
+    }
+
+    function wrapHour24(h) { return ((h % 24) + 24) % 24; }
+
+    function formatTime(decimalHour) {
+      let hour = Math.floor(decimalHour);
+      let minute = Math.round((decimalHour % 1) * 60);
+      if (minute === 60) { hour += 1; minute = 0; }
+      hour = wrapHour24(hour);
+      const suffix = hour >= 12 ? 'PM' : 'AM';
+      let displayHour = hour % 12; if (displayHour === 0) displayHour = 12;
+      const displayMinute = minute.toString().padStart(2, '0');
+      return `${displayHour}:${displayMinute} ${suffix}`;
+    }
+
+    function formatDuration(hours) {
+      const totalMinutes = Math.round(hours * 60);
+      const sign = totalMinutes < 0 ? -1 : 1;
+      const abs = Math.abs(totalMinutes);
+      const h = Math.floor(abs / 60);
+      const m = abs % 60;
+      return `${sign < 0 ? '-' : ''}${h}:${m.toString().padStart(2, '0')}`;
+    }
+
+    function renderEarlyReleaseGrid() {
+      const grid = document.getElementById('earlyReleaseGrid');
+      grid.innerHTML = '';
+      for (let i = 0; i <= 17; i++) {
+        const start = i;
+        const early = start + 8;
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        cell.innerHTML = `<h4>R${i}</h4><div>Start: <span class="time">${formatTime(start)}</span></div><div>Early Release: <span class="time">${formatTime(early)}</span></div>`;
+        grid.appendChild(cell);
+      }
+    }
+
+    function updateSelectedEarly() {
+      const early = startHour + 8;
+      document.getElementById('selectedEarly').textContent = formatTime(early);
+    }
+
+    function updateTime() {
+      startHour = parseInt(document.getElementById('reserveStart').value);
+      const elapsed = parseFloat(document.getElementById('currentTime').value);
+      document.getElementById('elapsedHM').innerText = formatDuration(elapsed);
+
+      const current = startHour + elapsed;
+      document.getElementById('selectedTime').innerText = formatTime(current);
+
+      let remaining = normalReserve - elapsed;
+      if (remaining >= 0) {
+        document.getElementById('timeRemaining').innerText = `${formatDuration(remaining)} left`;
+        document.getElementById('timeRemaining').classList.remove('red');
+      } else {
+        let extended = Math.min(maxReserve - normalReserve, elapsed - normalReserve);
+        document.getElementById('timeRemaining').innerText = `+${formatDuration(extended)}`;
+        document.getElementById('timeRemaining').classList.add('red');
+      }
+
+      const endTime = startHour + normalReserve;
+      document.getElementById('endTime').innerText = formatTime(endTime);
+      const parkedByTime = endTime - debrief;
+      document.getElementById('parkedBy').innerText = formatTime(parkedByTime);
+
+      const departureDec = current + callout;
+      document.getElementById('departureTime').innerText = formatTime(departureDec);
+
+      const remainingAtDeparture = normalReserve - (elapsed + callout + debrief);
+      const remainingAtDepEl = document.getElementById('remainingAtDep');
+      if (remainingAtDeparture >= 0) {
+        remainingAtDepEl.textContent = `${formatDuration(remainingAtDeparture)} left`;
+        remainingAtDepEl.classList.remove('red');
+      } else {
+        const overDep = Math.min(maxReserve - normalReserve, (elapsed + callout + debrief) - normalReserve);
+        remainingAtDepEl.textContent = `+${formatDuration(overDep)}`;
+        remainingAtDepEl.classList.add('red');
+      }
+
+      // Remaining duty from actual current system clock
+      const now = new Date();
+      const nowDecimal = now.getHours() + now.getMinutes()/60;
+      const elapsedNow = nowDecimal - startHour;
+      const remainingNow = normalReserve - (elapsedNow + debrief);
+      const remainingNowEl = document.getElementById('remainingNow');
+      if (remainingNow >= 0) {
+        remainingNowEl.textContent = `${formatDuration(remainingNow)} left`;
+        remainingNowEl.classList.remove('red');
+      } else {
+        const overNow = Math.min(maxReserve - normalReserve, (elapsedNow + debrief) - normalReserve);
+        remainingNowEl.textContent = `+${formatDuration(overNow)}`;
+        remainingNowEl.classList.add('red');
+      }
+
+      updateSelectedEarly();
+    }
+
+    // --- Slider control buttons ---
+    function resetSlider() {
+      const slider = document.getElementById('currentTime');
+      slider.value = 0;
+      updateTime();
+    }
+
+    function jumpToNow() {
+      const now = new Date();
+      const nowDecimal = now.getHours() + now.getMinutes()/60;
+      const elapsedNow = nowDecimal - startHour;
+      const clamped = Math.max(0, Math.min(18, elapsedNow));
+      const snapped = Math.round(clamped / 0.25) * 0.25;
+      document.getElementById('currentTime').value = snapped;
+      updateTime();
+    }
+
+    renderEarlyReleaseGrid();
+    updateTime();
+    setInterval(updateTime, 60000);
+  </script>
+</body>
+</html>
